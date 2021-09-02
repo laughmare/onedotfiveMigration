@@ -19,6 +19,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  *
@@ -94,6 +96,17 @@ public class Migration {
         }
     }
 
+    private static Set<SubscriptionInfo> convertJsonList(String json) {
+        try {
+            ObjectMapper objectMapper = new ObjectMapper();
+            Set<SubscriptionInfo> retVal = objectMapper.readValue(json, mapper.getTypeFactory().constructCollectionType(Set.class, SubscriptionInfo.class));
+            return retVal;
+        } catch (Exception ex) {
+            System.out.println(ex.getMessage());
+            return null;
+        }
+    }
+
     private static List<Output> convert(List<Input> inputs) {
         List<Output> outputs = new ArrayList<>();
         Map<String, Output> outputMap = new HashMap<>();
@@ -119,25 +132,31 @@ public class Migration {
     }
 
     private static void insertData(List<Output> outputs) {
-        String SQL = "INSERT INTO hazelcast_json_metadata(service,unique_key,version,data,username,modified_date) "
+        String INSERTSQL = "INSERT INTO hazelcast_json_metadata(service,unique_key,version,data,username,modified_date) "
                 + "VALUES(?,?,?,?,?,?)";
         try (
                 Connection conn = connect();
-                PreparedStatement statement = conn.prepareStatement(SQL);) {
+                PreparedStatement statement = conn.prepareStatement(INSERTSQL);) {
             int count = 0;
 
             for (Output output : outputs) {
-                try {
-                    statement.setString(1, output.getService());
-                    statement.setString(2, output.getUniqueKey());
-                    statement.setString(3, output.getVersion());
-                    statement.setString(4, mapper.writeValueAsString(output.getData()));
-                    statement.setString(5, output.getUsername());
-                    statement.setTimestamp(6, new Timestamp(System.currentTimeMillis()));
+                Output existingData = selectById(output.getUniqueKey(), output.getVersion());
+                if (existingData == null) {
+                    try {
+                        statement.setString(1, output.getService());
+                        statement.setString(2, output.getUniqueKey());
+                        statement.setString(3, output.getVersion());
+                        statement.setString(4, mapper.writeValueAsString(output.getData()));
+                        statement.setString(5, output.getUsername());
+                        statement.setTimestamp(6, new Timestamp(System.currentTimeMillis()));
 
-                    statement.addBatch();
-                } catch (Exception ex) {
-                    System.out.println(ex.getMessage());
+                        statement.addBatch();
+                    } catch (Exception ex) {
+                        System.out.println(ex.getMessage());
+                    }
+                } else {
+                    existingData.getData().addAll(output.getData());
+                    updateData(existingData);
                 }
                 count++;
                 // execute every 100 rows or less
@@ -149,4 +168,46 @@ public class Migration {
             System.out.println(ex.getMessage());
         }
     }
+
+    private static void updateData(Output existingData) {
+
+        String UPDATESQL = "UPDATE hazelcast_json_metadata set data = ? where unique_key = ?";
+        try (
+                Connection conn = connect();
+                PreparedStatement statement = conn.prepareStatement(UPDATESQL);) {
+            try {
+                statement.setString(1, existingData.getUniqueKey());
+                statement.setString(2, mapper.writeValueAsString(existingData.getData()));
+                statement.executeUpdate();
+            } catch (Exception ex) {
+                System.out.println(ex.getMessage());
+            }
+        } catch (SQLException ex) {
+            System.out.println(ex.getMessage());
+        }
+    }
+
+    private static Output selectById(String id, String version) {
+        String SQL = "select * from hazelcast_json_metadata where service = 'onedotfivebridge' and unique_key = '" + id + "' and version = '" + version +"'";
+        try (Connection conn = connect();
+                Statement stmt = conn.createStatement();
+                ResultSet rs = stmt.executeQuery(SQL)) {
+            while (rs.next()) {
+                Output o = new Output();
+                o.setService(rs.getString("service"));
+                o.setUniqueKey(rs.getString("unique_key"));
+                o.setUsername(rs.getString("username"));
+                o.setVersion(rs.getString("version"));
+                String data = rs.getString("data");
+                Set<SubscriptionInfo> subscriptionInfos = convertJsonList(data);
+                o.setData(subscriptionInfos);
+                return o;
+            }
+        } catch (SQLException ex) {
+            System.out.println(ex.getMessage());
+            return null;
+        }
+        return null;
+    }
+
 }
