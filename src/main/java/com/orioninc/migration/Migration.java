@@ -5,6 +5,7 @@
  */
 package com.orioninc.migration;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -19,8 +20,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
 /**
  *
@@ -90,7 +89,7 @@ public class Migration {
             ObjectMapper objectMapper = new ObjectMapper();
             SubscriptionInfo retVal = objectMapper.readValue(json, SubscriptionInfo.class);
             return retVal;
-        } catch (Exception ex) {
+        } catch (JsonProcessingException ex) {
             System.out.println(ex.getMessage());
             return null;
         }
@@ -101,7 +100,7 @@ public class Migration {
             ObjectMapper objectMapper = new ObjectMapper();
             Set<SubscriptionInfo> retVal = objectMapper.readValue(json, mapper.getTypeFactory().constructCollectionType(Set.class, SubscriptionInfo.class));
             return retVal;
-        } catch (Exception ex) {
+        } catch (JsonProcessingException ex) {
             System.out.println(ex.getMessage());
             return null;
         }
@@ -151,12 +150,15 @@ public class Migration {
                         statement.setTimestamp(6, new Timestamp(System.currentTimeMillis()));
 
                         statement.addBatch();
-                    } catch (Exception ex) {
+                    } catch (JsonProcessingException | SQLException ex) {
                         System.out.println(ex.getMessage());
                     }
                 } else {
-                    existingData.getData().addAll(output.getData());
-                    updateData(existingData);
+                    Set<SubscriptionInfo> ccCheckedData = checkClientCorrelator(existingData, output);
+                    if (ccCheckedData != null && !ccCheckedData.isEmpty()) {
+                        existingData.getData().addAll(ccCheckedData);
+                        updateData(existingData);
+                    }
                 }
                 count++;
                 // execute every 100 rows or less
@@ -167,6 +169,24 @@ public class Migration {
         } catch (SQLException ex) {
             System.out.println(ex.getMessage());
         }
+    }
+    
+    private static Set<SubscriptionInfo> checkClientCorrelator(Output existingData, Output output){
+        Set<SubscriptionInfo> retVal = new HashSet<>();
+        Boolean ccExists = false;
+        for(SubscriptionInfo s : output.getData()){
+            for(SubscriptionInfo e : existingData.getData()){
+                if(s.getNotificatonClientCorelator().equals(e.getNotificatonClientCorelator())){
+                    ccExists = true;
+                    break;
+                }
+            }
+            if(!ccExists){
+                retVal.add(s);
+            }
+            ccExists = false;
+        }
+        return retVal;
     }
 
     private static void updateData(Output existingData) {
@@ -179,7 +199,7 @@ public class Migration {
                 statement.setString(1, existingData.getUniqueKey());
                 statement.setString(2, mapper.writeValueAsString(existingData.getData()));
                 statement.executeUpdate();
-            } catch (Exception ex) {
+            } catch (JsonProcessingException | SQLException ex) {
                 System.out.println(ex.getMessage());
             }
         } catch (SQLException ex) {
